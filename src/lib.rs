@@ -134,8 +134,132 @@ impl Middleware for AWSSigV4Verifier {
 
 #[cfg(test)]
 mod tests {
+    use aws_sig_verify::{ErrorKind, SignatureError, SigningKeyKind};
+    use gotham::pipeline::new_pipeline;
+    use gotham::pipeline::single::single_pipeline;
+    use gotham::plain::test::TestServer;
+    use gotham::router::builder::{build_router, DefineSingleRoute, DrawRoutes};
+    use gotham::router::Router;
+    use gotham::state::State;
+    use http::status::StatusCode;
+    use hyper::{Body, Response};
+    use hyper::header::HeaderValue;
+    use ring::digest::SHA256;
+    use ring::hmac;
+    use super::AWSSigV4Verifier;
+
+    fn generic_handler(state: State) -> (State, Response<Body>) {
+        let response: Response<Body> = Response::builder()
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .status(StatusCode::OK)
+            .body(Body::from("OK"))
+            .unwrap();
+
+        (state, response)
+    }
+
+    fn get_signing_key(
+        kind: SigningKeyKind,
+        _access_key_id: &str,
+        _session_token: Option<&str>,
+        req_date_opt: Option<&str>,
+        region_opt: Option<&str>,
+        service_opt: Option<&str>
+    ) -> Result<Vec<u8>, SignatureError> {
+        let k_secret = "AWS4wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".as_bytes();
+        match kind {
+            SigningKeyKind::KSecret => Ok(k_secret.to_vec()),
+            _ => get_signing_key_kdate(kind, k_secret, req_date_opt, region_opt, service_opt)
+        }
+    }
+
+    fn get_signing_key_kdate(
+        kind: SigningKeyKind,
+        k_secret: &[u8],
+        req_date_opt: Option<&str>,
+        region_opt: Option<&str>,
+        service_opt: Option<&str>
+    ) -> Result<Vec<u8>, SignatureError> {
+        if let Some(req_date) = req_date_opt {
+            let k_date = hmac::sign(
+                &hmac::SigningKey::new(&SHA256, k_secret.as_ref()),
+                req_date.as_bytes());
+            match kind {
+                SigningKeyKind::KDate => Ok(k_date.as_ref().to_vec()),
+                _ => get_signing_key_kregion(kind, k_date.as_ref(), region_opt, service_opt)
+            }
+        } else {
+            Err(SignatureError::new(ErrorKind::InvalidCredential, "Missing request date parameter"))
+        }
+    }
+
+    fn get_signing_key_kregion(
+        kind: SigningKeyKind,
+        k_date: &[u8],
+        region_opt: Option<&str>,
+        service_opt: Option<&str>
+    ) -> Result<Vec<u8>, SignatureError> {
+        if let Some(region) = region_opt {
+            let k_region = hmac::sign(
+                &hmac::SigningKey::new(&SHA256, k_date.as_ref()),
+                region.as_bytes());
+            match kind {
+                SigningKeyKind::KRegion => Ok(k_region.as_ref().to_vec()),
+                _ => get_signing_key_kservice(kind, k_region.as_ref(), service_opt)
+            }
+        } else {
+            Err(SignatureError::new(ErrorKind::InvalidCredential, "Missing request region parameter"))
+        }
+    }
+
+    fn get_signing_key_kservice(
+        kind: SigningKeyKind,
+        k_region: &[u8],
+        service_opt: Option<&str>
+    ) -> Result<Vec<u8>, SignatureError> {
+        if let Some(service) = service_opt {
+            let k_service = hmac::sign(
+                &hmac::SigningKey::new(&SHA256, k_region.as_ref()),
+                service.as_bytes());
+            match kind {
+                SigningKeyKind::KService => Ok(k_service.as_ref().to_vec()),
+                _ => {
+                    let k_signing = hmac::sign(
+                        &hmac::SigningKey::new(&SHA256, k_service.as_ref()),
+                        "aws4_request".as_bytes());
+                    Ok(k_signing.as_ref().to_vec())
+                }
+            }
+        } else {
+            Err(SignatureError::new(ErrorKind::InvalidCredential, "Missing service parameter"))
+        }
+    }
+
+    fn router() -> Router {
+        let verifier = AWSSigV4Verifier{
+            signing_key_kind: SigningKeyKind::KSigning,
+            signing_key_fn: get_signing_key,
+            allowed_mismatch: None,
+            service: "service".to_string(),
+            region: "us-east-1".to_string(),
+        };
+        let (chain, pipelines) = single_pipeline(new_pipeline().add(verifier).build());
+
+        build_router(chain, pipelines, |route| {
+            route.get("/").to(generic_handler);
+        })
+    }
     #[test]
-            fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn check_verify() {
+        let test_server = TestServer::new(router()).unwrap();
+        let test_client = test_server.client();
+
+        // This is the get-vanilla AWS testcase.
+        let response = test_client.get("http://localhost/")
+            .with_header("Host", HeaderValue::from_static("example.amazonaws.com"))
+            .with_header("X-Amz-Date", HeaderValue::from_static("20150830T123600Z"))
+            .with_header("Authorization", HeaderValue::from_static("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31"))
+            .perform().unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
