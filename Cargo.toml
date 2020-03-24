@@ -10,9 +10,10 @@ gotham-04 = ["aws_sig_verify/ring-014", "futures/use_std"]
 default = ["gotham-04"]
 
 [dependencies]
-aws_sig_verify = { version = "^0.3.2", path = "../rust-aws-sig" }
+aws_sig_verify = "^0.4"
 chrono = "^0.4"
 futures = "^0.1.29"
 hyper = "^0.12"
 http = "^0.1.17"
 gotham = "^0.4"
+ring = ">=0.14"
