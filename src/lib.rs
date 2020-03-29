@@ -7,9 +7,13 @@ extern crate hyper;
 use std::collections::HashMap;
 use std::io;
 
-use aws_sig_verify::{
-    AWSSigV4, Request, SigningKeyFn, SigningKeyKind
+/// Re-export aws_sig_verify so users don't have to compute versions.
+pub use aws_sig_verify::{
+    AWSSigV4Algorithm, AWSSigV4, ErrorKind, Request, SignatureError,
+    SigningKeyFn, SigningKeyKind, normalize_uri_path_component,
+    canonicalize_uri_path, normalize_query_parameters,
 };
+
 
 use futures::future;
 use futures::Async::{Ready, NotReady};
